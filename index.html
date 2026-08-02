@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1F4E79">
+<title>SP95 — las tres más baratas cerca</title>
+<style>
+  :root{
+    --navy:#1F4E79; --turq:#2A9D8F; --amber:#E9A23B;
+    --green:#4C9A2A; --red:#E25E4B;
+    --bg:#F4F5F6; --card:#FFFFFF; --ink:#17202A; --muted:#6B7280; --line:#E3E6E9;
+    --sans:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    --cifra:Palatino,"Palatino Linotype","Book Antiqua",Georgia,serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.45;
+    -webkit-text-size-adjust:100%;
+  }
+  .wrap{max-width:560px;margin:0 auto;padding:0 16px 40px}
+
+  header{background:var(--navy);color:#fff;padding:18px 16px calc(18px + env(safe-area-inset-top));}
+  header .wrap{padding-bottom:0}
+  h1{margin:0;font-size:1.15rem;font-weight:700;letter-spacing:.01em}
+  header p{margin:2px 0 0;font-size:.82rem;opacity:.8}
+
+  .btn{
+    display:block;width:100%;margin:20px 0 12px;padding:16px;
+    background:var(--turq);color:#fff;border:0;border-radius:10px;
+    font-family:inherit;font-size:1.05rem;font-weight:700;cursor:pointer;
+  }
+  .btn:active{background:#22867a}
+  .btn:disabled{background:#9CB0AE;cursor:default}
+  .btn:focus-visible,.chip:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-offset:2px}
+
+  .chips{display:flex;gap:8px}
+  .chip{
+    flex:1;padding:9px 0;background:#fff;color:var(--navy);
+    border:1px solid var(--line);border-radius:8px;
+    font-family:inherit;font-size:.85rem;font-weight:600;cursor:pointer;
+  }
+  .chip[aria-pressed="true"]{background:var(--navy);color:#fff;border-color:var(--navy)}
+
+  .aviso{margin:14px 0 0;padding:12px 14px;border-radius:8px;font-size:.88rem}
+  .aviso.info{background:#EAF1F7;color:var(--navy)}
+  .aviso.error{background:#FCEDEA;color:#93342a;border-left:4px solid var(--red)}
+
+  ol.lista{list-style:none;margin:16px 0 0;padding:0}
+  .eess{
+    background:var(--card);border-radius:10px;margin-bottom:12px;
+    padding:14px 16px;border-left:5px solid var(--turq);
+    box-shadow:0 1px 2px rgba(23,32,42,.07);
+  }
+  .eess.top{border-left-color:var(--amber)}
+  .fila{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+  .precio{font-family:var(--cifra);font-size:2.05rem;font-weight:700;line-height:1;color:var(--navy);font-variant-numeric:tabular-nums}
+  .precio span{font-family:var(--sans);font-size:.72rem;font-weight:600;color:var(--muted);margin-left:4px}
+  .km{font-family:var(--cifra);font-size:1.1rem;font-weight:700;color:var(--green);white-space:nowrap;font-variant-numeric:tabular-nums}
+  .rotulo{margin:8px 0 0;font-weight:700;font-size:.98rem}
+  .dir{margin:2px 0 0;font-size:.85rem;color:var(--muted)}
+  .hor{margin:6px 0 0;font-size:.78rem;color:var(--muted)}
+  .acc{margin-top:10px;display:flex;gap:14px;font-size:.85rem}
+  .acc a{color:var(--turq);font-weight:600;text-decoration:none}
+  .acc a:hover{text-decoration:underline}
+
+  details{margin-top:22px;font-size:.85rem;color:var(--muted)}
+  summary{cursor:pointer;color:var(--navy);font-weight:600}
+  .manual{display:flex;gap:8px;margin-top:10px}
+  .manual input{
+    flex:1;padding:11px;border:1px solid var(--line);border-radius:8px;
+    font-family:inherit;font-size:.95rem;min-width:0;
+  }
+  .manual button{
+    padding:0 16px;background:var(--navy);color:#fff;border:0;border-radius:8px;
+    font-family:inherit;font-weight:600;cursor:pointer;
+  }
+
+  footer{margin-top:26px;padding-top:14px;border-top:1px solid var(--line);font-size:.75rem;color:var(--muted)}
+  footer a{color:var(--muted)}
+  @media (prefers-reduced-motion:no-preference){
+    .eess{animation:sube .22s ease both}
+    @keyframes sube{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>Sin plomo 95 · las tres más baratas</h1>
+    <p>Precios oficiales del MITECO</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <button class="btn" id="btnLoc">Localizarme</button>
+
+  <div class="chips" id="chips" role="group" aria-label="Radio de búsqueda">
+    <button class="chip" data-r="2" aria-pressed="false">2 km</button>
+    <button class="chip" data-r="5" aria-pressed="false">5 km</button>
+    <button class="chip" data-r="10" aria-pressed="true">10 km</button>
+    <button class="chip" data-r="20" aria-pressed="false">20 km</button>
+  </div>
+
+  <div id="aviso"></div>
+  <ol class="lista" id="lista"></ol>
+
+  <details id="respaldo">
+    <summary>Buscar por localidad</summary>
+    <div class="manual">
+      <input id="q" type="text" placeholder="Cuenca, Tetuán, 28020…" autocomplete="off">
+      <button id="btnQ">Buscar</button>
+    </div>
+  </details>
+
+  <footer>
+    <p id="pie">Los precios los declara cada estación al Ministerio y pueden variar en el surtidor. No incluyen descuentos de fidelización.</p>
+  </footer>
+</main>
+
+<script>
+/* ------------------------------------------------------------------ */
+/* Pon aquí la URL de tu Worker desplegado                             */
+const API = 'https://gasolineras-sp95.esperance.workers.dev';
+/* ------------------------------------------------------------------ */
+
+const $ = s => document.querySelector(s);
+const elAviso = $('#aviso'), elLista = $('#lista'), elPie = $('#pie');
+let datos = null, radio = 10, origen = null;
+
+const eur = n => n.toFixed(3).replace('.', ',');
+const dist = km => km < 1
+  ? Math.round(km * 1000) + ' m'
+  : km.toFixed(1).replace('.', ',') + ' km';
+
+function aviso(texto, clase) {
+  elAviso.innerHTML = texto ? `<p class="aviso ${clase || 'info'}">${texto}</p>` : '';
+}
+
+function cargando(on, texto) {
+  $('#btnLoc').disabled = on;
+  $('#btnLoc').textContent = on ? (texto || 'Buscando…') : 'Localizarme';
+}
+
+/* --- geolocalización ---------------------------------------------- */
+$('#btnLoc').addEventListener('click', () => {
+  if (!navigator.geolocation) {
+    aviso('Este navegador no puede darme la ubicación. Usa «Buscar por localidad».', 'error');
+    $('#respaldo').open = true;
+    return;
+  }
+  cargando(true, 'Localizando…');
+  aviso('');
+  navigator.geolocation.getCurrentPosition(
+    p => consultar(p.coords.latitude, p.coords.longitude),
+    err => {
+      cargando(false);
+      const msg = {
+        1: 'Has denegado el acceso a la ubicación. Actívalo en los permisos del navegador o busca por localidad.',
+        2: 'El GPS no ha dado señal. Prueba al aire libre o busca por localidad.',
+        3: 'El GPS ha tardado demasiado. Vuelve a intentarlo o busca por localidad.'
+      }[err.code] || 'No he podido obtener la ubicación.';
+      aviso(msg, 'error');
+      $('#respaldo').open = true;
+    },
+    { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
+  );
+});
+
+/* --- búsqueda por localidad --------------------------------------- */
+$('#btnQ').addEventListener('click', buscarLocalidad);
+$('#q').addEventListener('keydown', e => { if (e.key === 'Enter') buscarLocalidad(); });
+
+async function buscarLocalidad() {
+  const q = $('#q').value.trim();
+  if (!q) return;
+  cargando(true, 'Buscando…');
+  aviso('');
+  try {
+    const r = await fetch(`${API}/geo?q=${encodeURIComponent(q)}`);
+    if (!r.ok) throw new Error();
+    const g = await r.json();
+    consultar(g.lat, g.lon);
+  } catch {
+    cargando(false);
+    aviso('No he encontrado esa localidad. Prueba con el municipio o el código postal.', 'error');
+  }
+}
+
+/* --- consulta al Worker ------------------------------------------- */
+async function consultar(lat, lon) {
+  origen = { lat, lon };
+  cargando(true, 'Consultando precios…');
+  try {
+    const r = await fetch(`${API}/?lat=${lat}&lon=${lon}`);
+    if (!r.ok) throw new Error();
+    datos = await r.json();
+    pintar();
+  } catch {
+    aviso('No he podido conectar con el servicio de precios. Inténtalo en un minuto.', 'error');
+    elLista.innerHTML = '';
+  } finally {
+    cargando(false);
+  }
+}
+
+/* --- radio --------------------------------------------------------- */
+$('#chips').addEventListener('click', e => {
+  const b = e.target.closest('.chip');
+  if (!b) return;
+  radio = Number(b.dataset.r);
+  document.querySelectorAll('.chip').forEach(c =>
+    c.setAttribute('aria-pressed', String(c === b)));
+  if (datos) pintar();
+});
+
+/* --- render -------------------------------------------------------- */
+const ESCALERA = [2, 5, 10, 20, 40, 60];
+
+function pintar() {
+  if (!datos || !datos.buckets) return;
+  const B = datos.buckets;
+
+  let r = radio, b = B[r], ampliado = false;
+
+  if (!b || b.total < 3) {
+    for (const rr of ESCALERA) {
+      if (rr <= radio) continue;
+      if (B[rr] && B[rr].total >= 3) { r = rr; b = B[rr]; ampliado = true; break; }
+    }
+    if (!b || !b.total) { r = 60; b = B[60]; ampliado = true; }
+  }
+
+  if (!b || !b.top.length) {
+    aviso('No hay ninguna estación con sin plomo 95 a menos de 60 km de aquí.', 'error');
+    elLista.innerHTML = '';
+    return;
+  }
+
+  const top = b.top.slice(0, 3);
+
+  aviso(ampliado
+    ? `Con ${radio} km no llegaban a tres. Amplío la búsqueda a ${r} km.`
+    : `Las tres más baratas entre las ${b.total} estaciones que hay a ${radio} km.`);
+
+  elLista.innerHTML = top.map((e, i) => `
+    <li class="eess${i === 0 ? ' top' : ''}">
+      <div class="fila">
+        <div class="precio">${eur(e.p)}<span>€/L</span></div>
+        <div class="km">${dist(e.km)}</div>
+      </div>
+      <p class="rotulo">${esc(e.n || 'Sin rótulo')}</p>
+      <p class="dir">${esc(e.d)} · ${esc(e.m)}</p>
+      ${e.h ? `<p class="hor">${esc(e.h)}</p>` : ''}
+      <div class="acc">
+        <a href="geo:${e.la},${e.lo}?q=${e.la},${e.lo}(${encodeURIComponent(e.n || 'Gasolinera')})">Abrir en el mapa</a>
+        <a href="https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=${origen.lat},${origen.lon};${e.la},${e.lo}" target="_blank" rel="noopener">Ruta</a>
+      </div>
+    </li>`).join('');
+
+  elPie.textContent = (datos.fecha ? `Datos del MITECO, actualizados a ${datos.fecha}. ` : '') +
+    'Los precios los declara cada estación al Ministerio y pueden variar en el surtidor. No incluyen descuentos de fidelización.';
+}
+
+function esc(s) {
+  return String(s || '').replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+</script>
+</body>
+</html>
