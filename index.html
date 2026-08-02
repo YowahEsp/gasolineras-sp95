@@ -136,8 +136,10 @@
   .tag.abre{background:rgba(76,154,42,.14);color:#3B7A20}
   .tag.cierra{background:rgba(233,162,59,.16);color:#9A6710}
   .tag.ahorro{background:rgba(42,157,143,.14);color:#1E7A6F}
+  .tag.malo{background:rgba(226,94,75,.15);color:#A63A2C}
   @media (prefers-color-scheme:dark){
-    .tag.abre{color:#8FD26A} .tag.cierra{color:#F0BE73} .tag.ahorro{color:#6FD3C6}
+    .tag.abre{color:#8FD26A} .tag.cierra{color:#F0BE73}
+    .tag.ahorro{color:#6FD3C6} .tag.malo{color:#F2907F}
   }
   .punto{width:7px;height:7px;border-radius:50%;background:currentColor;flex:0 0 7px}
 
@@ -255,6 +257,7 @@
 /* ------------------------------------------------------------------ */
 const API = 'https://gasolineras-sp95.esperance.workers.dev';
 const DEPOSITO = 30;               // litros de referencia (Ignis: depósito de 32 L)
+const CONSUMO  = 6.0;              // L/100 km reales, para valorar el desvío
 const ESCALERA = [2, 5, 10, 20, 40, 60];
 /* ------------------------------------------------------------------ */
 
@@ -449,12 +452,14 @@ function pintar() {
   const B = datos.buckets;
   let r = radio, b = B[r], ampliado = false;
 
-  if (!b || b.total < 3) {
+  /* Solo se amplía si en el radio pedido no hay NADA. Ampliar por no llegar
+     a tres convertía una consulta de 10 km en uno de 40 y colocaba en cabeza
+     estaciones a media hora de coche.                                      */
+  if (!b || b.total === 0) {
     for (const rr of ESCALERA) {
       if (rr <= radio) continue;
-      if (B[rr] && B[rr].total >= 3) { r = rr; b = B[rr]; ampliado = true; break; }
+      if (B[rr] && B[rr].total > 0) { r = rr; b = B[rr]; ampliado = true; break; }
     }
-    if (!b || !b.total) { r = 60; b = B[60]; ampliado = true; }
   }
   if (!b || !b.top.length) {
     aviso('No hay ninguna estación con sin plomo 95 a menos de 60 km de aquí.', 'error');
@@ -464,11 +469,18 @@ function pintar() {
 
   const n = Math.min(3, b.top.length);
   const cuantas = n === 1 ? 'la más barata' : n === 2 ? 'las dos más baratas' : 'las tres más baratas';
-  aviso(ampliado
-    ? 'Con ' + radio + ' km no llegaban a tres, así que amplío la búsqueda a ' + r + ' km.'
-    : b.total === 1
-      ? 'Solo hay una estación con sin plomo 95 a ' + radio + ' km.'
-      : 'De las ' + b.total + ' estaciones que tienes a ' + radio + ' km, ' + cuantas + '.');
+  let texto;
+  if (ampliado) {
+    texto = 'No hay ninguna estación a ' + radio + ' km. Amplío a ' + r +
+            ' km: mira bien las distancias antes de moverte.';
+  } else if (b.total === 1) {
+    texto = 'Solo hay una estación con sin plomo 95 a ' + radio + ' km. Prueba con un radio mayor.';
+  } else if (b.total === 2) {
+    texto = 'A ' + radio + ' km solo tienes estas dos. Prueba con un radio mayor.';
+  } else {
+    texto = 'De las ' + b.total + ' estaciones que tienes a ' + radio + ' km, ' + cuantas + '.';
+  }
+  aviso(texto);
 
   const med = b.med;
   elSalida.innerHTML = '<ol class="lista">' + b.top.slice(0, 3).map((e, i) => {
@@ -477,11 +489,32 @@ function pintar() {
     const dif = med ? med - e.p : 0;
     const hayAhorro = dif >= 0.01;
 
+    /* Algunas estaciones no declaran rótulo: no dejar el título en blanco. */
+    const conNombre = /[^\s\u00A0\u200B-\u200D\uFEFF]/.test(String(e.n || ''));
+    const titulo = conNombre ? String(e.n).trim() : (e.m || 'Estación de servicio');
+
+    /* Coste real del desvío: lo que ahorras menos lo que quemas en llegar. */
+    const ahorro = hayAhorro ? dif * DEPOSITO : 0;
+    const vuelta = 2 * e.km;
+    const viaje = vuelta * (CONSUMO / 100) * e.p;
+    const neto = ahorro - viaje;
+    const lejos = e.km > 2;
+
     const tags = [];
     if (st) tags.push('<span class="tag ' + (st.abierta ? 'abre' : 'cierra') + '">' +
                      '<span class="punto"></span>' + esc(st.texto) + '</span>');
     if (hayAhorro) tags.push('<span class="tag ahorro">' + Math.round(dif * 100) +
                              ' cts/L bajo la mediana</span>');
+    if (lejos && neto <= 0) tags.push('<span class="tag malo">No compensa el desvío</span>');
+
+    let linea = '';
+    if (hayAhorro && !lejos) {
+      linea = 'Unos ' + dosDec(ahorro) + ' € menos al llenar ' + DEPOSITO + ' litros.';
+    } else if (hayAhorro) {
+      linea = 'Ahorras ' + dosDec(ahorro) + ' € en ' + DEPOSITO + ' litros, pero ir y volver son ' +
+              dosDec(vuelta) + ' km, unos ' + dosDec(viaje) + ' € de gasolina. Neto: ' +
+              (neto > 0 ? '+' : '') + dosDec(neto) + ' €.';
+    }
 
     return '<li class="eess' + (i === 0 ? ' top' : '') + '">' +
       '<span class="puesto">' + (i + 1) + '</span>' +
@@ -490,12 +523,11 @@ function pintar() {
           '</span><span class="un">€/L</span></span>' +
         '<span class="km"><b>' + dist(e.km) + '</b></span>' +
       '</div>' +
-      '<p class="rotulo">' + esc(e.n || 'Sin rótulo') + '</p>' +
-      '<p class="dir">' + esc(e.d) + ' · ' + esc(e.m) + '</p>' +
+      '<p class="rotulo">' + esc(titulo) + '</p>' +
+      '<p class="dir">' + esc(e.d) + (conNombre ? ' · ' + esc(e.m) : '') + '</p>' +
       (tags.length ? '<div class="meta">' + tags.join('') + '</div>' : '') +
       (e.h && st ? '<p class="horario-crudo">' + esc(e.h) + '</p>' : '') +
-      (hayAhorro ? '<p class="deposito">Unos ' + dosDec(dif * DEPOSITO) +
-                     ' € menos al llenar ' + DEPOSITO + ' litros</p>' : '') +
+      (linea ? '<p class="deposito">' + linea + '</p>' : '') +
       '<div class="acc">' +
         (MOVIL
           ? '<a href="geo:' + e.la + ',' + e.lo + '?q=' + e.la + ',' + e.lo +
