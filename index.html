@@ -493,8 +493,9 @@ function pintar() {
     const dif = med ? med - e.p : 0;
     const hayAhorro = dif >= 0.01;
 
-    /* Algunas estaciones no declaran rótulo: no dejar el título en blanco. */
-    const conNombre = /[^\s\u00A0\u200B-\u200D\uFEFF]/.test(String(e.n || ''));
+    /* Algunas estaciones declaran un rótulo que no imprime nada (guion suave,
+       marcas de dirección...). Se exige al menos una letra o una cifra.    */
+    const conNombre = /[\p{L}\p{N}]/u.test(String(e.n || ''));
     const titulo = conNombre ? String(e.n).trim() : (e.m || 'Estación de servicio');
 
     /* Coste real del desvío: lo que ahorras menos lo que quemas en llegar. */
