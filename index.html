@@ -122,7 +122,9 @@
   }
 
   .km{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:.92rem;font-weight:600;white-space:nowrap}
+  .km{flex-direction:column;align-items:flex-end;gap:1px}
   .km b{font-family:var(--cifra);font-size:1.15rem;color:var(--ink);font-variant-numeric:tabular-nums}
+  .km .min{font-size:.72rem;font-weight:600;opacity:.75}
 
   .rotulo{margin:12px 0 0;font-size:1.02rem;font-weight:700;letter-spacing:.005em}
   .dir{margin:2px 0 0;font-size:.85rem;color:var(--muted)}
@@ -455,10 +457,10 @@ function pintar() {
   /* Solo se amplía si en el radio pedido no hay NADA. Ampliar por no llegar
      a tres convertía una consulta de 10 km en uno de 40 y colocaba en cabeza
      estaciones a media hora de coche.                                      */
-  if (!b || b.total === 0) {
+  if (!b || !b.top || !b.top.length) {
     for (const rr of ESCALERA) {
       if (rr <= radio) continue;
-      if (B[rr] && B[rr].total > 0) { r = rr; b = B[rr]; ampliado = true; break; }
+      if (B[rr] && B[rr].top && B[rr].top.length) { r = rr; b = B[rr]; ampliado = true; break; }
     }
   }
   if (!b || !b.top.length) {
@@ -467,18 +469,22 @@ function pintar() {
     return;
   }
 
-  const n = Math.min(3, b.top.length);
-  const cuantas = n === 1 ? 'la más barata' : n === 2 ? 'las dos más baratas' : 'las tres más baratas';
+  const n = b.top.length;
+  const como = datos.ruta === false ? 'en línea recta' : 'por carretera';
   let texto;
   if (ampliado) {
-    texto = 'No hay ninguna estación a ' + radio + ' km. Amplío a ' + r +
+    texto = 'No hay ninguna estación a ' + radio + ' km ' + como + '. Amplío a ' + r +
             ' km: mira bien las distancias antes de moverte.';
-  } else if (b.total === 1) {
-    texto = 'Solo hay una estación con sin plomo 95 a ' + radio + ' km. Prueba con un radio mayor.';
-  } else if (b.total === 2) {
-    texto = 'A ' + radio + ' km solo tienes estas dos. Prueba con un radio mayor.';
+  } else if (n === 1) {
+    texto = 'Solo hay una estación con sin plomo 95 a ' + radio + ' km ' + como +
+            '. Prueba con un radio mayor.';
+  } else if (n === 2) {
+    texto = 'A ' + radio + ' km ' + como + ' solo tienes estas dos. Prueba con un radio mayor.';
   } else {
-    texto = 'De las ' + b.total + ' estaciones que tienes a ' + radio + ' km, ' + cuantas + '.';
+    texto = 'Las tres más baratas en ' + radio + ' km ' + como + '.';
+  }
+  if (datos.ruta === false) {
+    texto += ' El servicio de rutas no responde, así que las distancias se quedan cortas.';
   }
   aviso(texto);
 
@@ -521,7 +527,8 @@ function pintar() {
       '<div class="cabeza">' +
         '<span class="placa"><b>' + p.slice(0, 4) + '</b><span class="mil">' + p.slice(4) +
           '</span><span class="un">€/L</span></span>' +
-        '<span class="km"><b>' + dist(e.km) + '</b></span>' +
+        '<span class="km"><b>' + dist(e.km) + '</b>' +
+          (e.min ? '<span class="min">' + e.min + ' min</span>' : '') + '</span>' +
       '</div>' +
       '<p class="rotulo">' + esc(titulo) + '</p>' +
       '<p class="dir">' + esc(e.d) + (conNombre ? ' · ' + esc(e.m) : '') + '</p>' +
@@ -544,7 +551,9 @@ function pintar() {
   elSello.textContent = datos.fecha ? 'Precios del MITECO · ' + datos.fecha : '';
   $('#btnRec').hidden = false;
   elPie.textContent = 'Los precios los declara cada estación al Ministerio y pueden variar en el surtidor. ' +
-    'No incluyen descuentos de fidelización. El horario es orientativo.';
+    'No incluyen descuentos de fidelización. El horario es orientativo. ' +
+    (datos.ruta ? 'Distancias y tiempos por carretera (OSRM / OpenStreetMap).'
+                : 'Distancias en línea recta.');
 }
 
 function esc(s) {
