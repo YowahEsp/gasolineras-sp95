@@ -1,565 +1,271 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#1F4E79">
-<title>Sin plomo 95 · las tres más baratas</title>
-<style>
-  :root{
-    --navy:#1F4E79; --navy-2:#173C5D; --turq:#2A9D8F; --amber:#E9A23B;
-    --green:#4C9A2A; --red:#E25E4B;
-    --bg:#F2F4F6; --card:#FFFFFF; --ink:#16202B; --muted:#69747F; --line:#E4E8EC;
-    --sombra:0 1px 2px rgba(22,32,43,.06), 0 4px 14px rgba(22,32,43,.05);
-    --sans:"Helvetica Neue",Helvetica,Arial,sans-serif;
-    --cifra:Palatino,"Palatino Linotype","Book Antiqua",Georgia,serif;
-    --r:14px;
-  }
-  @media (prefers-color-scheme:dark){
-    :root{
-      --bg:#0F1620; --card:#18222E; --ink:#E9EEF3; --muted:#93A1AE; --line:#26333F;
-      --sombra:0 1px 2px rgba(0,0,0,.4);
-    }
-  }
-  *{box-sizing:border-box}
-  html,body{margin:0;padding:0}
-  body{
-    background:var(--bg); color:var(--ink);
-    font-family:var(--sans); font-size:16px; line-height:1.45;
-    -webkit-text-size-adjust:100%; -webkit-font-smoothing:antialiased;
-  }
-  .wrap{max-width:520px;margin:0 auto;padding:0 16px}
+/* ---------------------------------------------------------------------------
+   worker.js — Cloudflare Worker
+   Proxy CORS + filtrado geográfico sobre el servicio REST de precios de
+   carburantes del MITECO.
 
-  /* ---------- cabecera ---------- */
-  .top{
-    background:linear-gradient(160deg,var(--navy) 0%,var(--navy-2) 100%);
-    color:#fff;padding:calc(20px + env(safe-area-inset-top)) 0 22px;
-  }
-  .top .wrap{display:flex;align-items:center;gap:12px}
-  .surtidor{flex:0 0 34px;opacity:.9}
-  .top h1{margin:0;font-size:1.12rem;font-weight:700;letter-spacing:.005em}
-  .top p{margin:1px 0 0;font-size:.8rem;opacity:.72}
+   Rutas:
+     GET /?lat=40.4168&lon=-3.7038   -> estaciones con SP95 ordenadas por km
+     GET /geo?q=Cuenca              -> geocodificación de respaldo (Nominatim)
 
-  main{padding-bottom:40px}
+   Despliegue:
+     wrangler init gasolineras-sp95
+     (sustituir src/index.js por este archivo)
+     wrangler deploy
+--------------------------------------------------------------------------- */
 
-  /* ---------- acciones ---------- */
-  .accion{margin-top:-14px}
-  .btn{
-    display:flex;align-items:center;justify-content:center;gap:9px;
-    width:100%;padding:16px;border:0;border-radius:var(--r);
-    background:var(--turq);color:#fff;box-shadow:var(--sombra);
-    font-family:inherit;font-size:1.04rem;font-weight:700;cursor:pointer;
-    transition:background .15s,transform .1s;
-  }
-  .btn:active{transform:scale(.985)}
-  .btn:disabled{background:#8FADAA;cursor:progress}
-  .btn svg{flex:0 0 20px}
+const BASE = 'https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes';
+const TTL = 1200;              // 20 min de caché por provincia
+const RADIOS = [2, 5, 10, 20, 40, 60];   // mismos radios que ofrece el cliente
+const POR_RADIO = 10;          // candidatas por radio antes de rutar
+const OSRM = 'https://router.project-osrm.org/table/v1/driving/';
+const MAX_RUTA = 45;           // destinos máximos en una llamada a OSRM
 
-  .radio-bloque{margin:18px 0 4px}
-  .radio-bloque .et{
-    display:block;font-size:.72rem;font-weight:700;letter-spacing:.09em;
-    text-transform:uppercase;color:var(--muted);margin-bottom:7px;
-  }
-  .chips{display:flex;gap:7px}
-  .chip{
-    flex:1;padding:10px 0;border:1px solid var(--line);border-radius:10px;
-    background:var(--card);color:var(--ink);
-    font-family:inherit;font-size:.86rem;font-weight:600;cursor:pointer;
-    transition:background .15s,color .15s,border-color .15s;
-  }
-  .chip[aria-pressed="true"]{background:var(--navy);color:#fff;border-color:var(--navy)}
+/* Orígenes autorizados a consumir el worker. */
+const ORIGENES = [
+  'https://yowahesp.github.io',
+  'https://yowah.codeberg.page',
+  'http://localhost:8000'
+];
 
-  :focus-visible{outline:3px solid var(--amber);outline-offset:2px}
+/* Centroides provinciales (código INE, lat, lon). Sirven solo para decidir
+   qué provincias hay que consultar; no necesitan ser exactos.            */
+const PROV = [
+  ['01',42.85,-2.75],['02',38.83,-1.95],['03',38.50,-0.60],['04',37.20,-2.35],
+  ['05',40.55,-5.00],['06',38.70,-6.30],['07',39.60, 2.90],['08',41.70, 1.95],
+  ['09',42.35,-3.55],['10',39.75,-6.20],['11',36.60,-5.75],['12',40.20,-0.20],
+  ['13',38.90,-3.90],['14',37.95,-4.75],['15',43.15,-8.45],['16',39.95,-2.10],
+  ['17',42.15, 2.60],['18',37.30,-3.20],['19',40.85,-2.55],['20',43.15,-2.20],
+  ['21',37.65,-6.75],['22',42.25,-0.20],['23',38.00,-3.40],['24',42.60,-5.85],
+  ['25',42.00, 1.00],['26',42.30,-2.45],['27',42.95,-7.40],['28',40.45,-3.70],
+  ['29',36.80,-4.70],['30',38.05,-1.50],['31',42.70,-1.65],['32',42.20,-7.55],
+  ['33',43.30,-6.05],['34',42.30,-4.55],['35',28.50,-14.60],['36',42.40,-8.55],
+  ['37',40.80,-6.05],['38',28.40,-16.90],['39',43.20,-4.00],['40',41.15,-4.00],
+  ['41',37.55,-5.80],['42',41.75,-2.50],['43',41.10, 0.80],['44',40.65,-0.85],
+  ['45',39.85,-4.30],['46',39.45,-0.80],['47',41.65,-4.75],['48',43.20,-2.85],
+  ['49',41.70,-6.00],['50',41.60,-0.90],['51',35.89,-5.32],['52',35.29,-2.94]
+];
 
-  /* ---------- avisos ---------- */
-  .aviso{
-    margin:16px 0 0;padding:11px 14px;border-radius:10px;
-    font-size:.86rem;line-height:1.4;
-  }
-  .aviso.info{background:rgba(42,157,143,.12);color:var(--ink)}
-  .aviso.error{background:rgba(226,94,75,.13);color:var(--ink);border-left:4px solid var(--red)}
-
-  /* ---------- estado inicial ---------- */
-  .vacio{
-    margin-top:28px;padding:28px 20px;text-align:center;color:var(--muted);
-    border:1px dashed var(--line);border-radius:var(--r);font-size:.9rem;
-  }
-  .vacio strong{display:block;color:var(--ink);font-size:1rem;margin-bottom:5px}
-
-  /* ---------- fichas ---------- */
-  ol.lista{list-style:none;margin:18px 0 0;padding:0}
-  .eess{
-    position:relative;background:var(--card);border-radius:var(--r);
-    margin-bottom:12px;padding:16px 16px 14px;box-shadow:var(--sombra);
-    border:1px solid var(--line);
-  }
-  .eess.top{border-color:rgba(233,162,59,.55)}
-
-  .puesto{
-    position:absolute;top:14px;left:16px;
-    width:22px;height:22px;border-radius:50%;
-    display:flex;align-items:center;justify-content:center;
-    font-size:.72rem;font-weight:700;color:#fff;background:var(--muted);
-  }
-  .eess.top .puesto{background:var(--amber)}
-
-  .cabeza{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-left:32px}
-
-  /* placa de precio, como el tótem de una estación */
-  .placa{
-    display:inline-flex;align-items:baseline;gap:4px;
-    background:var(--navy);color:#fff;border-radius:9px;
-    padding:7px 12px 8px;font-family:var(--cifra);font-variant-numeric:tabular-nums;
-  }
-  .eess.top .placa{background:var(--navy);box-shadow:inset 0 0 0 2px var(--amber)}
-  .placa b{font-size:1.9rem;font-weight:700;line-height:1;letter-spacing:-.01em}
-  .eess.top .placa b{color:var(--amber)}
-  .placa .mil{font-size:1.05rem;font-weight:700;line-height:1;position:relative;top:-.55em;margin-left:-1px}
-  .eess.top .placa .mil{color:var(--amber)}
-  .placa .un{
-    font-family:var(--sans);font-size:.6rem;font-weight:700;letter-spacing:.06em;
-    opacity:.72;align-self:flex-end;margin-left:3px;
-  }
-
-  .km{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:.92rem;font-weight:600;white-space:nowrap}
-  .km{flex-direction:column;align-items:flex-end;gap:1px}
-  .km b{font-family:var(--cifra);font-size:1.15rem;color:var(--ink);font-variant-numeric:tabular-nums}
-  .km .min{font-size:.72rem;font-weight:600;opacity:.75}
-
-  .rotulo{margin:12px 0 0;font-size:1.02rem;font-weight:700;letter-spacing:.005em}
-  .dir{margin:2px 0 0;font-size:.85rem;color:var(--muted)}
-
-  .meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
-  .tag{
-    display:inline-flex;align-items:center;gap:5px;
-    padding:4px 9px;border-radius:999px;font-size:.76rem;font-weight:600;
-    background:rgba(105,116,127,.11);color:var(--muted);
-  }
-  .tag.abre{background:rgba(76,154,42,.14);color:#3B7A20}
-  .tag.cierra{background:rgba(233,162,59,.16);color:#9A6710}
-  .tag.ahorro{background:rgba(42,157,143,.14);color:#1E7A6F}
-  .tag.malo{background:rgba(226,94,75,.15);color:#A63A2C}
-  @media (prefers-color-scheme:dark){
-    .tag.abre{color:#8FD26A} .tag.cierra{color:#F0BE73}
-    .tag.ahorro{color:#6FD3C6} .tag.malo{color:#F2907F}
-  }
-  .punto{width:7px;height:7px;border-radius:50%;background:currentColor;flex:0 0 7px}
-
-  .horario-crudo{margin:8px 0 0;font-size:.73rem;color:var(--muted);opacity:.8}
-  .deposito{margin:8px 0 0;font-size:.78rem;color:var(--muted)}
-
-  .acc{display:flex;gap:8px;margin-top:13px}
-  .acc a{
-    flex:1;text-align:center;padding:9px 0;border-radius:10px;
-    font-size:.85rem;font-weight:700;text-decoration:none;
-    background:rgba(42,157,143,.12);color:var(--turq);
-  }
-  .acc a.sec{background:transparent;border:1px solid var(--line);color:var(--muted);font-weight:600}
-
-  /* ---------- esqueleto de carga ---------- */
-  .skel{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
-        margin-bottom:12px;padding:16px;box-shadow:var(--sombra)}
-  .barra{height:12px;border-radius:6px;background:var(--line);margin-bottom:9px}
-  .barra.g{height:34px;width:42%;margin-bottom:14px}
-  .barra.m{width:62%} .barra.s{width:38%;margin-bottom:0}
-  @media (prefers-reduced-motion:no-preference){
-    .barra{animation:lat 1.1s ease-in-out infinite}
-    @keyframes lat{0%,100%{opacity:.55}50%{opacity:1}}
-    .eess{animation:sube .3s cubic-bezier(.2,.7,.3,1) both}
-    .eess:nth-child(2){animation-delay:.06s}
-    .eess:nth-child(3){animation-delay:.12s}
-    @keyframes sube{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-  }
-
-  /* ---------- pie ---------- */
-  .pie{margin-top:24px;padding-top:14px;border-top:1px solid var(--line);font-size:.74rem;color:var(--muted)}
-  .sello{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}
-  .recargar{
-    display:inline-flex;align-items:center;gap:5px;background:none;border:0;padding:4px 0;
-    color:var(--turq);font-family:inherit;font-size:.78rem;font-weight:700;cursor:pointer;
-  }
-  details{margin-top:20px;font-size:.85rem}
-  summary{cursor:pointer;color:var(--turq);font-weight:600;font-size:.82rem}
-  .manual{display:flex;gap:8px;margin-top:10px}
-  .manual input{
-    flex:1;min-width:0;padding:11px 13px;border:1px solid var(--line);border-radius:10px;
-    background:var(--card);color:var(--ink);font-family:inherit;font-size:.95rem;
-  }
-  .manual button{
-    padding:0 17px;border:0;border-radius:10px;background:var(--navy);color:#fff;
-    font-family:inherit;font-weight:700;cursor:pointer;
-  }
-</style>
-</head>
-<body>
-
-<div class="top">
-  <div class="wrap">
-    <svg class="surtidor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M3 21h11M4 21V4a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v17"/>
-      <path d="M5 10h7"/><path d="M16 8h2a2 2 0 0 1 2 2v6a1.5 1.5 0 0 0 3 0v-6l-3-3"/>
-    </svg>
-    <div>
-      <h1>Sin plomo 95</h1>
-      <p>Las tres más baratas que tienes cerca</p>
-    </div>
-  </div>
-</div>
-
-<main class="wrap">
-  <div class="accion">
-    <button class="btn" id="btnLoc">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M22 12h-3M5 12H2"/><circle cx="12" cy="12" r="8"/>
-      </svg>
-      <span id="btnTxt">Localizarme</span>
-    </button>
-  </div>
-
-  <div class="radio-bloque">
-    <span class="et">Buscar en un radio de</span>
-    <div class="chips" id="chips" role="group" aria-label="Radio de búsqueda">
-      <button class="chip" data-r="2" aria-pressed="false">2 km</button>
-      <button class="chip" data-r="5" aria-pressed="false">5 km</button>
-      <button class="chip" data-r="10" aria-pressed="true">10 km</button>
-      <button class="chip" data-r="20" aria-pressed="false">20 km</button>
-    </div>
-  </div>
-
-  <div id="aviso" aria-live="polite"></div>
-  <div id="salida" aria-live="polite">
-    <div class="vacio" id="vacio">
-      <strong>Toca «Localizarme»</strong>
-      Comparo el precio del sin plomo 95 en las estaciones de tu alrededor con los datos oficiales del Ministerio.
-    </div>
-  </div>
-
-  <details id="respaldo">
-    <summary>Buscar por localidad en lugar de por GPS</summary>
-    <div class="manual">
-      <input id="q" type="text" placeholder="Cuenca, Tetuán, 28020…" autocomplete="off" enterkeyhint="search">
-      <button id="btnQ">Buscar</button>
-    </div>
-  </details>
-
-  <div class="pie">
-    <div class="sello">
-      <span id="sello"></span>
-      <button class="recargar" id="btnRec" hidden>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/>
-        </svg>Actualizar
-      </button>
-    </div>
-    <p id="pie">Los precios los declara cada estación al Ministerio y pueden variar en el surtidor. No incluyen descuentos de fidelización.</p>
-  </div>
-</main>
-
-<script>
-/* ------------------------------------------------------------------ */
-const API = 'https://gasolineras-sp95.esperance.workers.dev';
-const DEPOSITO = 30;               // litros de referencia (Ignis: depósito de 32 L)
-const CONSUMO  = 6.0;              // L/100 km reales, para valorar el desvío
-const ESCALERA = [2, 5, 10, 20, 40, 60];
-/* ------------------------------------------------------------------ */
-
-const $ = s => document.querySelector(s);
-const MOVIL = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-const elAviso = $('#aviso'), elSalida = $('#salida'), elPie = $('#pie'), elSello = $('#sello');
-let datos = null, radio = 10, origen = null;
-
-const dosDec = n => n.toFixed(2).replace('.', ',');
-const dist = km => km < 1
-  ? Math.round(km * 1000) + ' m'
-  : km.toFixed(1).replace('.', ',') + ' km';
-
-function aviso(txt, clase) {
-  elAviso.innerHTML = txt ? '<p class="aviso ' + (clase || 'info') + '">' + txt + '</p>' : '';
-}
-function ocupado(on, txt) {
-  $('#btnLoc').disabled = on;
-  $('#btnTxt').textContent = on ? txt : (datos ? 'Buscar otra vez' : 'Localizarme');
-}
-function esqueleto() {
-  elSalida.innerHTML = '<div class="skel"><div class="barra g"></div><div class="barra m"></div><div class="barra s"></div></div>'.repeat(3);
+function cors(req) {
+  const o = req.headers.get('Origin');
+  return {
+    'Access-Control-Allow-Origin': ORIGENES.includes(o) ? o : ORIGENES[0],
+    'Vary': 'Origin',
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store'
+  };
 }
 
-/* ============ horarios ============ */
-const ORD = ['L','M','X','J','V','S','D'];        // 0 = lunes
-
-function expandirDias(txt) {
-  const set = new Set();
-  for (const bloque of txt.split(',')) {
-    const t = bloque.trim().toUpperCase();
-    if (/^[LMXJVSD]$/.test(t)) { set.add(ORD.indexOf(t)); continue; }
-    const r = t.match(/^([LMXJVSD])\s*-\s*([LMXJVSD])$/);
-    if (!r) return null;
-    const a = ORD.indexOf(r[1]), b = ORD.indexOf(r[2]);
-    for (let i = 0; i < 7; i++) { const d = (a + i) % 7; set.add(d); if (d === b) break; }
-  }
-  return set.size ? set : null;
+function hav(la1, lo1, la2, lo2) {
+  const R = 6371, r = Math.PI / 180;
+  const dLa = (la2 - la1) * r, dLo = (lo2 - lo1) * r;
+  const a = Math.sin(dLa / 2) ** 2 +
+            Math.cos(la1 * r) * Math.cos(la2 * r) * Math.sin(dLo / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-function parseHorario(txt) {
-  if (!txt) return null;
-  const tramos = [];
-  for (const parte of String(txt).split(';')) {
-    const m = parte.trim().match(/^([LMXJVSD][LMXJVSD\s,\-]*)\s*:\s*(.+)$/i);
-    if (!m) continue;
-    const dias = expandirDias(m[1]);
-    if (!dias) return null;
-    const horas = m[2].trim().toUpperCase();
-    if (/^24\s*H/.test(horas)) { tramos.push({ dias, ini: 0, fin: 1440, todo: true }); continue; }
-    const encontrados = horas.match(/\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/g);
-    if (!encontrados) return null;
-    for (const h of encontrados) {
-      const g = h.match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/);
-      const ini = (+g[1]) * 60 + (+g[2]);
-      let fin = (+g[3]) * 60 + (+g[4]);
-      if (fin <= ini) fin += 1440;
-      tramos.push({ dias, ini, fin, todo: ini === 0 && fin >= 1439 });
-    }
-  }
-  return tramos.length ? tramos : null;
+function num(s) {
+  const v = parseFloat(String(s ?? '').replace(',', '.'));
+  return Number.isFinite(v) ? v : null;
 }
 
-const hhmm = m => String(Math.floor((m % 1440) / 60)).padStart(2, '0') + ':' +
-                  String((m % 1440) % 60).padStart(2, '0');
+/* Descarga y adelgaza una provincia. Se cachea ya procesada para que los
+   aciertos de caché no vuelvan a pagar el parseo del JSON original.      */
+async function provincia(id, ctx) {
+  const cache = caches.default;
+  const key = new Request(`https://cache.local/prov/${id}/v2`);
+  const hit = await cache.match(key);
+  if (hit) return hit.json();
 
-function estado(txt, lon) {
-  const tramos = parseHorario(txt);
-  if (!tramos) return null;
-  const ahora = new Date();
-  /* Los horarios son locales de la estación. Si la consulta cae en Canarias
-     y el dispositivo está en la Península, hay una hora de diferencia.    */
-  const desfase = (typeof lon === 'number' && lon < -12) ? -60 : 0;
-  let dia = (ahora.getDay() + 6) % 7;
-  let min = ahora.getHours() * 60 + ahora.getMinutes() + desfase;
-  if (min < 0) { min += 1440; dia = (dia + 6) % 7; }
-  else if (min >= 1440) { min -= 1440; dia = (dia + 1) % 7; }
-
-  if (tramos.length === 1 && tramos[0].todo && tramos[0].dias.size === 7) {
-    return { abierta: true, texto: 'Abierta 24 h' };
-  }
-  for (const t of tramos) {
-    if (t.dias.has(dia) && min >= t.ini && min < t.fin) {
-      return { abierta: true, texto: t.todo ? 'Abierta 24 h hoy' : 'Cierra a las ' + hhmm(t.fin) };
-    }
-  }
-  const ayer = (dia + 6) % 7;
-  for (const t of tramos) {
-    if (t.fin > 1440 && t.dias.has(ayer) && min + 1440 < t.fin) {
-      return { abierta: true, texto: 'Cierra a las ' + hhmm(t.fin) };
-    }
-  }
-  let sig = null;
-  for (const t of tramos) if (t.dias.has(dia) && t.ini > min) sig = Math.min(sig ?? Infinity, t.ini);
-  if (sig !== null) return { abierta: false, texto: 'Abre a las ' + hhmm(sig) };
-  const man = (dia + 1) % 7;
-  for (const t of tramos) if (t.dias.has(man)) sig = Math.min(sig ?? Infinity, t.ini);
-  if (sig === null) return { abierta: false, texto: 'Cerrada ahora' };
-  return { abierta: false, texto: sig === 0 ? 'Abre mañana' : 'Abre mañana a las ' + hhmm(sig) };
-}
-
-/* ============ geolocalización ============ */
-$('#btnLoc').addEventListener('click', () => localizar(false));
-$('#btnRec').addEventListener('click', () => { if (origen) consultar(origen.lat, origen.lon); });
-
-function localizar(silencioso) {
-  if (!navigator.geolocation) {
-    aviso('Este navegador no puede darme la ubicación. Usa la búsqueda por localidad.', 'error');
-    $('#respaldo').open = true;
-    return;
-  }
-  ocupado(true, 'Localizando…');
-  aviso('');
-  navigator.geolocation.getCurrentPosition(
-    p => consultar(p.coords.latitude, p.coords.longitude),
-    err => {
-      ocupado(false);
-      $('#btnTxt').textContent = 'Localizarme';
-      if (silencioso) return;
-      aviso({
-        1: 'Has denegado el acceso a la ubicación. Actívalo en los permisos del navegador o busca por localidad.',
-        2: 'El GPS no ha dado señal. Prueba al aire libre o busca por localidad.',
-        3: 'El GPS ha tardado demasiado. Vuelve a intentarlo o busca por localidad.'
-      }[err.code] || 'No he podido obtener la ubicación.', 'error');
-      $('#respaldo').open = true;
-    },
-    { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
-  );
-}
-
-/* Si ya concediste el permiso, no hace falta que toques nada. */
-if (navigator.permissions) {
-  navigator.permissions.query({ name: 'geolocation' })
-    .then(p => { if (p.state === 'granted') localizar(true); })
-    .catch(() => {});
-}
-
-/* ============ localidad ============ */
-$('#btnQ').addEventListener('click', buscarLocalidad);
-$('#q').addEventListener('keydown', e => { if (e.key === 'Enter') buscarLocalidad(); });
-
-async function buscarLocalidad() {
-  const q = $('#q').value.trim();
-  if (!q) return;
-  ocupado(true, 'Buscando…');
-  aviso('');
+  let j;
   try {
-    const r = await fetch(API + '/geo?q=' + encodeURIComponent(q));
-    if (!r.ok) throw new Error();
-    const g = await r.json();
-    consultar(g.lat, g.lon);
-  } catch {
-    ocupado(false);
-    aviso('No he encontrado esa localidad. Prueba con el municipio o el código postal.', 'error');
+    const r = await fetch(`${BASE}/EstacionesTerrestres/FiltroProvincia/${id}`, {
+      headers: { 'Accept': 'application/json', 'User-Agent': 'gasolineras-sp95/1.0' }
+    });
+    if (!r.ok) return { f: null, s: [] };
+    j = await r.json();
+  } catch { return { f: null, s: [] }; }
+
+  const s = [];
+  for (const e of (j.ListaEESSPrecio || [])) {
+    /* "R" = venta restringida (cooperativas, flotas, autoconsumo). Suelen ser
+       las más baratas del listado y no puedes repostar en ellas.           */
+    if ((e['Tipo Venta'] || '').trim().toUpperCase() === 'R') continue;
+    const p = num(e['Precio Gasolina 95 E5']);
+    if (p === null || p <= 0) continue;
+    const la = num(e['Latitud']);
+    const lo = num(e['Longitud (WGS84)']);
+    if (la === null || lo === null) continue;
+    s.push({
+      n: (e['Rótulo'] || '').trim(),
+      d: (e['Dirección'] || '').trim(),
+      m: (e['Municipio'] || '').trim(),
+      h: (e['Horario'] || '').trim(),
+      p, la, lo
+    });
   }
+
+  const body = JSON.stringify({ f: j.Fecha || null, s });
+  ctx.waitUntil(cache.put(key, new Response(body, {
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${TTL}` }
+  })));
+  return { f: j.Fecha || null, s };
 }
 
-/* ============ consulta ============ */
-async function consultar(lat, lon) {
-  origen = { lat, lon };
-  ocupado(true, 'Consultando precios…');
-  esqueleto();
+/* Distancias reales por carretera. Una sola llamada: origen -> N destinos.
+   Como la distancia por carretera nunca es menor que la recta, prefiltrar
+   por haversine no descarta candidatas válidas.                          */
+async function distanciasReales(lat, lon, lista) {
+  if (!lista.length) return false;
+  const coords = [lon.toFixed(6) + ',' + lat.toFixed(6)]
+    .concat(lista.map(e => e.lo.toFixed(6) + ',' + e.la.toFixed(6))).join(';');
   try {
-    const r = await fetch(API + '/?lat=' + lat + '&lon=' + lon);
-    if (!r.ok) throw new Error();
-    datos = await r.json();
-    pintar();
+    const r = await fetch(
+      OSRM + coords + '?sources=0&destinations=all&annotations=distance,duration&skip_waypoints=true',
+      { signal: AbortSignal.timeout(5000), headers: { 'User-Agent': 'gasolineras-sp95/1.0' } });
+    if (!r.ok) return false;
+    const j = await r.json();
+    const d = j.distances && j.distances[0];
+    const t = j.durations && j.durations[0];
+    if (!Array.isArray(d)) return false;
+    let ok = 0;
+    lista.forEach((e, i) => {
+      const m = d[i + 1];
+      if (typeof m === 'number' && m >= 0) {
+        e.km = Math.round(m / 10) / 100;
+        if (Array.isArray(t) && typeof t[i + 1] === 'number') e.min = Math.round(t[i + 1] / 60);
+        ok++;
+      }
+    });
+    return ok > 0;
   } catch {
-    aviso('No he podido conectar con el servicio de precios. Inténtalo en un minuto.', 'error');
-    elSalida.innerHTML = '';
-  } finally {
-    ocupado(false);
+    return false;
   }
 }
 
-$('#chips').addEventListener('click', e => {
-  const b = e.target.closest('.chip');
-  if (!b) return;
-  radio = Number(b.dataset.r);
-  document.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(c === b)));
-  if (datos) pintar();
-});
-
-/* ============ render ============ */
-function pintar() {
-  if (!datos) return;
-  if (!datos.buckets) {
-    aviso('El servicio ha respondido en un formato que no reconozco. Comprueba que el worker está actualizado.', 'error');
-    elSalida.innerHTML = '';
-    return;
+async function geocodificar(q) {
+  const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1' +
+              '&countrycodes=es&q=' + encodeURIComponent(q);
+  try {
+    const r = await fetch(url, { headers: { 'User-Agent': 'gasolineras-sp95/1.0' } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j) || !j.length) return null;
+    const lat = parseFloat(j[0].lat), lon = parseFloat(j[0].lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return { lat, lon, nombre: j[0].display_name };
+  } catch {
+    return null;
   }
-  const B = datos.buckets;
-  let r = radio, b = B[r], ampliado = false;
+}
 
-  /* Solo se amplía si en el radio pedido no hay NADA. Ampliar por no llegar
-     a tres convertía una consulta de 10 km en uno de 40 y colocaba en cabeza
-     estaciones a media hora de coche.                                      */
-  if (!b || !b.top || !b.top.length) {
-    for (const rr of ESCALERA) {
-      if (rr <= radio) continue;
-      if (B[rr] && B[rr].top && B[rr].top.length) { r = rr; b = B[rr]; ampliado = true; break; }
-    }
-  }
-  if (!b || !b.top.length) {
-    aviso('No hay ninguna estación con sin plomo 95 a menos de 60 km de aquí.', 'error');
-    elSalida.innerHTML = '';
-    return;
-  }
-
-  const n = b.top.length;
-  const como = datos.ruta === false ? 'en línea recta' : 'por carretera';
-  let texto;
-  if (ampliado) {
-    texto = 'No hay ninguna estación a ' + radio + ' km ' + como + '. Amplío a ' + r +
-            ' km: mira bien las distancias antes de moverte.';
-  } else if (n === 1) {
-    texto = 'Solo hay una estación con sin plomo 95 a ' + radio + ' km ' + como +
-            '. Prueba con un radio mayor.';
-  } else if (n === 2) {
-    texto = 'A ' + radio + ' km ' + como + ' solo tienes estas dos. Prueba con un radio mayor.';
-  } else {
-    texto = 'Las tres más baratas en ' + radio + ' km ' + como + '.';
-  }
-  if (datos.ruta === false) {
-    texto += ' El servicio de rutas no responde, así que las distancias se quedan cortas.';
-  }
-  aviso(texto);
-
-  const med = b.med;
-  elSalida.innerHTML = '<ol class="lista">' + b.top.slice(0, 3).map((e, i) => {
-    const p = e.p.toFixed(3).replace('.', ',');
-    const st = estado(e.h, e.lo);
-    const dif = med ? med - e.p : 0;
-    const hayAhorro = dif >= 0.01;
-
-    /* Algunas estaciones no declaran rótulo: no dejar el título en blanco. */
-    const conNombre = /[^\s\u00A0\u200B-\u200D\uFEFF]/.test(String(e.n || ''));
-    const titulo = conNombre ? String(e.n).trim() : (e.m || 'Estación de servicio');
-
-    /* Coste real del desvío: lo que ahorras menos lo que quemas en llegar. */
-    const ahorro = hayAhorro ? dif * DEPOSITO : 0;
-    const vuelta = 2 * e.km;
-    const viaje = vuelta * (CONSUMO / 100) * e.p;
-    const neto = ahorro - viaje;
-    const lejos = e.km > 2;
-
-    const tags = [];
-    if (st) tags.push('<span class="tag ' + (st.abierta ? 'abre' : 'cierra') + '">' +
-                     '<span class="punto"></span>' + esc(st.texto) + '</span>');
-    if (hayAhorro) tags.push('<span class="tag ahorro">' + Math.round(dif * 100) +
-                             ' cts/L bajo la mediana</span>');
-    if (lejos && neto <= 0) tags.push('<span class="tag malo">No compensa el desvío</span>');
-
-    let linea = '';
-    if (hayAhorro && !lejos) {
-      linea = 'Unos ' + dosDec(ahorro) + ' € menos al llenar ' + DEPOSITO + ' litros.';
-    } else if (hayAhorro) {
-      linea = 'Ahorras ' + dosDec(ahorro) + ' € en ' + DEPOSITO + ' litros, pero ir y volver son ' +
-              dosDec(vuelta) + ' km, unos ' + dosDec(viaje) + ' € de gasolina. Neto: ' +
-              (neto > 0 ? '+' : '') + dosDec(neto) + ' €.';
+export default {
+  async fetch(req, env, ctx) {
+    const CORS = cors(req);
+    if (req.method === 'OPTIONS') {
+      return new Response(null, {
+        headers: { ...CORS, 'Access-Control-Allow-Methods': 'GET, OPTIONS' }
+      });
     }
 
-    return '<li class="eess' + (i === 0 ? ' top' : '') + '">' +
-      '<span class="puesto">' + (i + 1) + '</span>' +
-      '<div class="cabeza">' +
-        '<span class="placa"><b>' + p.slice(0, 4) + '</b><span class="mil">' + p.slice(4) +
-          '</span><span class="un">€/L</span></span>' +
-        '<span class="km"><b>' + dist(e.km) + '</b>' +
-          (e.min ? '<span class="min">' + e.min + ' min</span>' : '') + '</span>' +
-      '</div>' +
-      '<p class="rotulo">' + esc(titulo) + '</p>' +
-      '<p class="dir">' + esc(e.d) + (conNombre ? ' · ' + esc(e.m) : '') + '</p>' +
-      (tags.length ? '<div class="meta">' + tags.join('') + '</div>' : '') +
-      (e.h && st ? '<p class="horario-crudo">' + esc(e.h) + '</p>' : '') +
-      (linea ? '<p class="deposito">' + linea + '</p>' : '') +
-      '<div class="acc">' +
-        (MOVIL
-          ? '<a href="geo:' + e.la + ',' + e.lo + '?q=' + e.la + ',' + e.lo +
-            '(' + encodeURIComponent(e.n || 'Gasolinera') + ')">Abrir en el mapa</a>'
-          : '<a target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat=' + e.la +
-            '&mlon=' + e.lo + '#map=17/' + e.la + '/' + e.lo + '">Abrir en el mapa</a>') +
-        '<a class="sec" target="_blank" rel="noopener" href="https://www.openstreetmap.org/directions' +
-          '?engine=fossgis_osrm_car&route=' + origen.lat + ',' + origen.lon + ';' + e.la + ',' + e.lo +
-          '">Ruta</a>' +
-      '</div>' +
-    '</li>';
-  }).join('') + '</ol>';
+    const u = new URL(req.url);
 
-  elSello.textContent = datos.fecha ? 'Precios del MITECO · ' + datos.fecha : '';
-  $('#btnRec').hidden = false;
-  elPie.textContent = 'Los precios los declara cada estación al Ministerio y pueden variar en el surtidor. ' +
-    'No incluyen descuentos de fidelización. El horario es orientativo. ' +
-    (datos.ruta ? 'Distancias y tiempos por carretera (OSRM / OpenStreetMap).'
-                : 'Distancias en línea recta.');
-}
+    if (u.pathname === '/geo') {
+      const q = (u.searchParams.get('q') || '').trim();
+      if (!q) return new Response(JSON.stringify({ error: 'Falta el parámetro q' }),
+                                  { status: 400, headers: CORS });
+      const g = await geocodificar(q);
+      if (!g) return new Response(JSON.stringify({ error: 'Sin resultados' }),
+                                  { status: 404, headers: CORS });
+      return new Response(JSON.stringify(g), { headers: CORS });
+    }
 
-function esc(s) {
-  return String(s || '').replace(/[&<>"]/g, c =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-}
-</script>
-</body>
-</html>
+    const lat = parseFloat(u.searchParams.get('lat'));
+    const lon = parseFloat(u.searchParams.get('lon'));
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return new Response(JSON.stringify({ error: 'Faltan lat/lon' }),
+                          { status: 400, headers: CORS });
+    }
+
+    /* Provincias candidatas: las dos más próximas siempre, y una tercera solo
+       si su centroide está a menos de 250 km (evita bajar la Península
+       entera cuando la consulta viene de Canarias).                       */
+    const orden = PROV
+      .map(p => ({ id: p[0], d: hav(lat, lon, p[1], p[2]) }))
+      .sort((a, b) => a.d - b.d);
+    const candidatas = orden.slice(0, 2).map(p => p.id);
+    if (orden[2] && orden[2].d < 250) candidatas.push(orden[2].id);
+
+    const packs = await Promise.all(candidatas.map(id => provincia(id, ctx)));
+    const fecha = packs.map(p => p.f).find(Boolean) || null;
+
+    const RADIO_MAX = RADIOS[RADIOS.length - 1];
+    const eess = [];
+    for (const pk of packs) {
+      for (const e of pk.s) {
+        const km = hav(lat, lon, e.la, e.lo);
+        if (km <= RADIO_MAX) eess.push({ ...e, km: Math.round(km * 100) / 100 });
+      }
+    }
+
+    /* Saneamiento: el listado del MITECO trae erratas ocasionales (precios
+       de 0,001 o de 9,999). Como toda la app consiste en enseñar el mínimo,
+       cualquier errata iría directa al primer puesto. Se descarta lo que se
+       aparte demasiado de la mediana local, que ya recoge las diferencias
+       reales entre Península, Canarias y Ceuta/Melilla.                   */
+    let limpio = eess;
+    if (eess.length >= 5) {
+      const ps = eess.map(e => e.p).sort((a, b) => a - b);
+      const mG = ps[Math.floor(ps.length / 2)];
+      limpio = eess.filter(e => e.p >= mG * 0.65 && e.p <= mG * 1.6);
+    }
+    const descartes = eess.length - limpio.length;
+
+    /* Medianas con la distancia en recta, antes de rutar: sirven de
+       referencia de precio de la zona y no dependen del radio de carretera. */
+    const medianas = {};
+    for (const r of RADIOS) {
+      const dentro = limpio.filter(e => e.km <= r).sort((a, b) => a.p - b.p);
+      medianas[r] = dentro.length
+        ? Math.round(dentro[Math.floor(dentro.length / 2)].p * 1000) / 1000
+        : null;
+    }
+
+    /* Candidatas a rutar: las más cercanas en general —hacen falta cuando el
+       radio pedido está vacío— más las más baratas de cada radio.         */
+    const vistas = new Set();
+    const cand = [];
+    const anotar = e => {
+      const k = e.la + ',' + e.lo;
+      if (!vistas.has(k)) { vistas.add(k); cand.push(e); }
+    };
+    limpio.slice().sort((a, b) => a.km - b.km).slice(0, 12).forEach(anotar);
+    for (const r of RADIOS) {
+      const dentro = limpio.filter(e => e.km <= r).sort((a, b) => a.p - b.p || a.km - b.km);
+      dentro.slice(0, POR_RADIO).forEach(anotar);
+      if (cand.length >= MAX_RUTA) break;
+    }
+    const aRutar = cand.slice(0, MAX_RUTA);
+
+    /* Si OSRM responde, e.km pasa a ser kilómetros de carretera. */
+    const ruta = await distanciasReales(lat, lon, aRutar);
+    const base = ruta ? aRutar : limpio;
+
+    const buckets = {};
+    for (const r of RADIOS) {
+      const dentro = base.filter(e => e.km <= r);
+      dentro.sort((a, b) => a.p - b.p || a.km - b.km);
+      buckets[r] = { med: medianas[r], top: dentro.slice(0, 5) };
+    }
+
+    /* Plan B para cuando el radio elegido no tiene nada: las tres estaciones
+       más cercanas, presentadas de más barata a más cara.                  */
+    const tresCercanas = base.slice().sort((a, b) => a.km - b.km).slice(0, 3);
+    const cercanas = {
+      med: medianas[RADIOS[RADIOS.length - 1]],
+      top: tresCercanas.sort((a, b) => a.p - b.p || a.km - b.km)
+    };
+
+    return new Response(JSON.stringify({ fecha, ruta, descartes, buckets, cercanas }),
+                        { headers: CORS });
+  }
+};
